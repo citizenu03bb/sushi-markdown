@@ -5,10 +5,142 @@ import html
 import os
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 import markdown
 from pygments.formatters import HtmlFormatter
+
+# Maximum file size to read (10 MiB) — prevents DoS via huge files
+MAX_FILE_SIZE = 10 * 1024 * 1024
+
+# Whitelist of HTML tags allowed in rendered Markdown output.
+# Anything not in this list is stripped to prevent XSS.
+ALLOWED_TAGS = frozenset({
+    'a', 'abbr', 'b', 'blockquote', 'br', 'caption', 'cite', 'code',
+    'col', 'colgroup', 'dd', 'del', 'details', 'dfn', 'div', 'dl', 'dt',
+    'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'hr', 'i', 'img', 'ins', 'kbd', 'li', 'mark', 'ol', 'p', 'pre',
+    'q', 's', 'samp', 'small', 'span', 'strike', 'strong', 'sub',
+    'summary', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead',
+    'tr', 'u', 'ul', 'var', 'input',
+})
+
+# Attributes allowed per tag (global attributes allowed on all tags)
+ALLOWED_ATTRS = {
+    '*': {'class', 'id', 'title', 'lang', 'dir'},
+    'a': {'href', 'name', 'target', 'rel'},
+    'img': {'src', 'alt', 'width', 'height', 'loading'},
+    'input': {'type', 'checked', 'disabled'},
+    'th': {'align', 'colspan', 'rowspan'},
+    'td': {'align', 'colspan', 'rowspan'},
+    'col': {'span'},
+    'colgroup': {'span'},
+    'ol': {'start', 'type'},
+    'li': {'value'},
+    'details': {'open'},
+    'code': {'class'},  # for language-xxx classes from Pygments
+    'pre': {'class'},
+    'div': {'class'},
+    'span': {'class'},
+}
+
+# URL schemes allowed in href/src
+ALLOWED_SCHEMES = frozenset({'http', 'https', 'mailto', 'file', 'data'})
+
+
+class _Sanitizer(HTMLParser):
+    """Strip disallowed HTML tags and attributes to prevent XSS."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._out = []
+        self._skip_depth = 0
+        self._skip_tag = None
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if self._skip_depth > 0:
+            if tag == self._skip_tag:
+                self._skip_depth += 1
+            return
+        if tag not in ALLOWED_TAGS:
+            # Skip this tag and its content for container tags
+            if tag in ('script', 'style', 'iframe', 'object', 'embed',
+                       'form', 'button', 'select', 'textarea', 'svg',
+                       'math', 'link', 'meta', 'base'):
+                self._skip_depth = 1
+                self._skip_tag = tag
+            return
+        # Filter attributes
+        allowed = ALLOWED_ATTRS.get(tag, set()) | ALLOWED_ATTRS.get('*', set())
+        clean_attrs = []
+        for name, value in attrs:
+            name = name.lower()
+            if name not in allowed:
+                continue
+            if name in ('href', 'src') and value:
+                # Validate URL scheme
+                scheme = value.split(':', 1)[0].lower() if ':' in value else ''
+                if scheme and scheme not in ALLOWED_SCHEMES:
+                    continue
+                # Block javascript: and other dangerous schemes explicitly
+                if value.strip().lower().startswith(('javascript:', 'vbscript:', 'data:text/html')):
+                    continue
+            clean_attrs.append((name, value))
+        attr_str = ''.join(
+            f' {n}' if v is None else f' {n}="{html.escape(v, quote=True)}"'
+            for n, v in clean_attrs
+        )
+        self._out.append(f'<{tag}{attr_str}>')
+
+    def handle_startendtag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in ALLOWED_TAGS and self._skip_depth == 0:
+            allowed = ALLOWED_ATTRS.get(tag, set()) | ALLOWED_ATTRS.get('*', set())
+            clean_attrs = []
+            for name, value in attrs:
+                name = name.lower()
+                if name not in allowed:
+                    continue
+                if name in ('href', 'src') and value:
+                    scheme = value.split(':', 1)[0].lower() if ':' in value else ''
+                    if scheme and scheme not in ALLOWED_SCHEMES:
+                        continue
+                    if value.strip().lower().startswith(('javascript:', 'vbscript:', 'data:text/html')):
+                        continue
+                clean_attrs.append((name, value))
+            attr_str = ''.join(
+                f' {n}' if v is None else f' {n}="{html.escape(v, quote=True)}"'
+                for n, v in clean_attrs
+            )
+            self._out.append(f'<{tag}{attr_str}/>')
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if self._skip_depth > 0:
+            if tag == self._skip_tag:
+                self._skip_depth -= 1
+                if self._skip_depth == 0:
+                    self._skip_tag = None
+            return
+        if tag in ALLOWED_TAGS:
+            self._out.append(f'</{tag}>')
+
+    def handle_data(self, data):
+        if self._skip_depth == 0:
+            self._out.append(html.escape(data))
+
+    def get_output(self) -> str:
+        return ''.join(self._out)
+
+
+def sanitize_html(raw_html: str) -> str:
+    """Remove dangerous HTML tags, attributes, and URL schemes."""
+    parser = _Sanitizer()
+    parser.feed(raw_html)
+    parser.close()
+    return parser.get_output()
 
 
 TASK_ITEM_RE = re.compile(
@@ -127,6 +259,15 @@ def _get_mermaid_script_src() -> str:
 
 def render_markdown(filepath: str, dark_mode: bool = True) -> str:
     path = Path(filepath)
+
+    # Guard: refuse to read files larger than MAX_FILE_SIZE
+    file_size = path.stat().st_size
+    if file_size > MAX_FILE_SIZE:
+        raise ValueError(
+            f'File too large ({file_size / 1024 / 1024:.1f} MiB). '
+            f'Maximum allowed is {MAX_FILE_SIZE / 1024 / 1024:.0f} MiB.'
+        )
+
     raw = path.read_text(encoding='utf-8', errors='replace')
     fm_html, body = strip_frontmatter(raw)
     body, mermaid_blocks = extract_mermaid_blocks(body)
@@ -152,15 +293,24 @@ def render_markdown(filepath: str, dark_mode: bool = True) -> str:
     if mermaid_blocks:
         rendered = restore_mermaid_blocks(rendered, mermaid_blocks)
 
+    # Sanitize: strip dangerous HTML tags, attributes, and URL schemes
+    rendered = sanitize_html(rendered)
+
     pygments_style = 'monokai' if dark_mode else 'friendly'
     pygments_css = HtmlFormatter(style=pygments_style).get_style_defs('.highlight')
 
     theme_class = 'theme-dark' if dark_mode else 'theme-light'
 
     mermaid_script = ''
+    mermaid_csp_src = ''
     if mermaid_blocks:
         mermaid_src = _get_mermaid_script_src()
         mermaid_theme = 'dark' if dark_mode else 'default'
+        # If Mermaid is loaded from a CDN, allow that origin in CSP
+        if mermaid_src.startswith('http'):
+            from urllib.parse import urlparse
+            parsed = urlparse(mermaid_src)
+            mermaid_csp_src = f' {parsed.scheme}://{parsed.netloc}'
         mermaid_script = f"""
 <script src="{mermaid_src}"></script>
 <script>
@@ -179,6 +329,7 @@ if (window.mermaid) {{
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'{mermaid_csp_src}; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none';">
 <style>
 :root.theme-dark {{
     --bg: #1e1e1e;
@@ -453,9 +604,20 @@ window.addEventListener('keydown', function(e) {{
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
+        print('Usage: render_markdown.py <filepath> [dark|light]', file=sys.stderr)
         sys.exit(1)
     filepath = sys.argv[1]
     dark = True
     if len(sys.argv) >= 3:
         dark = sys.argv[2].lower() != 'light'
-    sys.stdout.write(render_markdown(filepath, dark_mode=dark))
+    try:
+        sys.stdout.write(render_markdown(filepath, dark_mode=dark))
+    except FileNotFoundError:
+        print(f'Error: file not found: {filepath}', file=sys.stderr)
+        sys.exit(2)
+    except ValueError as e:
+        print(f'Error: {e}', file=sys.stderr)
+        sys.exit(3)
+    except Exception as e:
+        print(f'Unexpected error: {e}', file=sys.stderr)
+        sys.exit(4)

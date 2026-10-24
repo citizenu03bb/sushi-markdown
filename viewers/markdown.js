@@ -40,6 +40,7 @@ function _isDarkTheme() {
         if (gtkTheme.toLowerCase().includes('dark'))
             return true;
     } catch (e) {
+        // Settings schema may be unavailable; fall through to Gtk.Settings
     }
     let gtkSettings = Gtk.Settings.get_default();
     return gtkSettings ? !!gtkSettings.gtk_application_prefer_dark_theme : true;
@@ -60,6 +61,7 @@ function _isMarkdownFile(file) {
         if (contentType === 'text/markdown' || contentType === 'text/x-markdown')
             return true;
     } catch (e) {
+        // query_info may fail; fall through to extension-based check
     }
     return false;
 }
@@ -78,6 +80,7 @@ function _resolveLocalTarget(fileUri) {
                 }
             }
         } catch (e) {
+            // query_file_type may fail on some filesystems; treat as regular file
         }
         return candidate;
     }
@@ -409,6 +412,7 @@ var Klass = _isAvailable() ? GObject.registerClass({
                 try {
                     Gio.AppInfo.launch_default_for_uri(targetFile.get_uri(), null);
                 } catch (e) {
+                    logError(e, `Failed to open ${targetFile.get_uri()}`);
                 }
             }
             return true;
@@ -568,6 +572,8 @@ var Klass = _isAvailable() ? GObject.registerClass({
             try {
                 ldr.load_finish(result);
             } catch (e) {
+                if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    logError(e, 'Failed to load raw file content');
             }
         });
     }

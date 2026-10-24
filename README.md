@@ -26,6 +26,20 @@ However, `mimeHandler.js` appends `~/.local/share/sushi` to GJS's `imports.searc
 - **Dark / Light theme aware:** Follows `org.gnome.desktop.interface` (`color-scheme` and `gtk-theme`), switching both page styling and Pygments themes (`monokai` / `friendly`).
 - **Fixes upstream Sushi 50 toolbar visibility:** Works around the `gnome-sushi` 50 bug where `MainWindow._embedRenderer()` attaches `RendererToolbar` after `MainWindow.show_all()` without calling `toolbar.show_all()`.
 
+## Security
+
+This project takes security seriously. The following protections are built in:
+
+- **HTML Sanitization:** All rendered Markdown HTML is passed through a whitelist-based sanitizer that strips dangerous tags (`<script>`, `<iframe>`, `<object>`, `<svg>`, etc.), event handler attributes (`onclick`, `onerror`, …), and dangerous URL schemes (`javascript:`, `vbscript:`, `data:text/html`). Only a curated set of safe HTML tags and attributes is allowed.
+- **Content Security Policy (CSP):** The generated HTML includes a strict CSP header (`default-src 'none'`) that blocks inline scripts, external resource loading, form submissions, and framing — except for explicitly whitelisted sources (local files, Mermaid CDN when diagrams are present).
+- **WebKit2 Sandbox:** The viewer enables WebKit2's sandbox mode to isolate the rendering process.
+- **Mermaid `securityLevel: 'strict'`:** Mermaid diagrams are rendered with strict security to prevent XSS via diagram definitions.
+- **File Size Limit:** Files larger than 10 MiB are rejected to prevent denial-of-service via memory exhaustion.
+- **Dependency Verification:** `install.sh` checks that `gnome-sushi`, `python3-markdown`, and `python3-pygments` are installed before proceeding.
+- **Mermaid Integrity:** When downloading `mermaid.min.js` from CDN, the SHA-256 checksum is displayed for manual verification (automated verification is a TODO).
+
+If you open untrusted Markdown files, these protections significantly reduce the attack surface. However, no system is 100% secure — always exercise caution with files from unknown sources.
+
 ## Install
 
 Requires `gnome-sushi`, `python3-markdown`, and `python3-pygments` (plus `gir1.2-webkit2-4.1`, already pulled in by `gnome-sushi`).
