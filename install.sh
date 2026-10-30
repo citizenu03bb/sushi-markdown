@@ -74,6 +74,36 @@ cache_mermaid() {
 
 cache_mermaid || true
 
+# --- Cache MathJax (tex-svg, self-contained) locally for offline LaTeX math ---
+cache_mathjax() {
+    if [ -f "$target_dir/mathjax-tex-svg.js" ]; then
+        return 0
+    fi
+
+    local system_mathjax="/usr/share/nodejs/mathjax-full/es5/tex-svg.js"
+    if [ -f "$system_mathjax" ]; then
+        cp "$system_mathjax" "$target_dir/mathjax-tex-svg.js"
+        echo "mathjax -> $target_dir/mathjax-tex-svg.js (copied from system)"
+        return 0
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        local tmp_mathjax
+        tmp_mathjax=$(mktemp)
+        if curl -fsSL "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js" -o "$tmp_mathjax"; then
+            mv "$tmp_mathjax" "$target_dir/mathjax-tex-svg.js"
+            echo "mathjax -> $target_dir/mathjax-tex-svg.js (downloaded from jsDelivr)"
+            return 0
+        fi
+        rm -f "$tmp_mathjax"
+    fi
+
+    echo "WARNING: Could not obtain MathJax — LaTeX formulas will be loaded from the CDN when online." >&2
+    return 1
+}
+
+cache_mathjax || true
+
 if pkill -f org.gnome.NautilusPreviewer 2>/dev/null; then
     echo "restarted org.gnome.NautilusPreviewer"
 fi

@@ -382,8 +382,14 @@ var Klass = _isAvailable() ? GObject.registerClass({
             let fileUri = hashIdx !== -1 ? uri.slice(0, hashIdx) : uri;
             let fragment = hashIdx !== -1 ? decodeURIComponent(uri.slice(hashIdx + 1)) : null;
 
-            // Same-document anchor link
-            if (fileUri === this._file.get_uri() || fileUri === this._currentBaseUri) {
+            // Same-document anchor link. A bare "#frag" href resolves against
+            // the base URI (the parent directory), but a link to that directory
+            // without a fragment means "open its README", not "stay here".
+            // Compare files with Gio rather than URI strings, since WebKit and
+            // Gio escape characters such as parentheses differently.
+            let isCurrentFile = Gio.File.new_for_uri(fileUri).equal(this._file);
+            let isBareFragment = fileUri === this._currentBaseUri && fragment !== null;
+            if (isCurrentFile || isBareFragment) {
                 if (fragment !== null) {
                     let escaped = JSON.stringify(fragment);
                     this._webView.run_javascript(

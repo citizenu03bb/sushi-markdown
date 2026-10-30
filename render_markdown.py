@@ -165,6 +165,27 @@ MERMAID_FENCE_RE = re.compile(
 
 MERMAID_CDN_URL = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js'
 
+MATHJAX_CDN_URL = 'https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js'
+
+# Code is matched first so that `$` / `\(` inside code spans and fences are
+# left alone; only the math alternatives are turned into placeholders.
+MATH_RE = re.compile(
+    r'(?P<fence>^(?P<findent>[ \t]*)(?P<fchars>`{3,}|~{3,})[ \t]*(?P<flang>[^\n]*)\r?\n'
+    r'(?P<fcode>.*?)^(?P=findent)(?P=fchars)[ \t]*$)'
+    r'|(?P<codespan>(?P<ticks>`+).+?(?<!`)(?P=ticks)(?!`))'
+    r'|(?P<escaped>\\\$)'
+    r'|\$\$(?P<display>.+?)\$\$'
+    r'|\\\[(?P<display2>.+?)\\\]'
+    r'|\\\((?P<inline2>.+?)\\\)'
+    # Inline $...$: no space just inside the delimiters and no digit right
+    # after the closing one, so "costs $5 and $10" stays plain text. No
+    # backticks inside, so a `$` can never pair with one in a later code span.
+    r'|(?<![\\$\w])\$(?!\s)(?P<inline>[^$\n`]+?)(?<![\s\\])\$(?![\d$])',
+    re.MULTILINE | re.DOTALL,
+)
+
+_MATH_PLACEHOLDER = 'SUSHIMATHPLACEHOLDER{}X'
+
 
 def _replace_task_item(match: re.Match) -> str:
     checked = match.group(1).lower() == 'x'
@@ -246,18 +267,87 @@ def restore_mermaid_blocks(rendered_html: str, blocks: list[str]) -> str:
     return rendered_html
 
 
-def _get_mermaid_script_src() -> str:
-    """Locate a local mermaid.min.js for offline rendering, falling back to jsDelivr CDN."""
+def extract_math(text: str) -> tuple[str, list[tuple[bool, str]]]:
+    """Replace LaTeX math (and ```math fences) with placeholders so Markdown leaves it intact."""
+    blocks: list[tuple[bool, str]] = []
+
+    def _stash(display: bool, tex: str) -> str:
+        idx = len(blocks)
+        blocks.append((display, tex.strip()))
+        token = _MATH_PLACEHOLDER.format(idx)
+        return f'\n\n{token}\n\n' if display else token
+
+    def _sub(match: re.Match) -> str:
+        if match.group('fence'):
+            if match.group('flang').strip().lower() == 'math':
+                return match.group('findent') + _stash(True, match.group('fcode')).strip('\n')
+            return match.group(0)
+        if match.group('codespan'):
+            return match.group(0)
+        if match.group('escaped'):
+            return '&#36;'
+        for name, display in (('display', True), ('display2', True),
+                              ('inline2', False), ('inline', False)):
+            tex = match.group(name)
+            if tex is not None:
+                if not tex.strip():
+                    return match.group(0)
+                return _stash(display, tex)
+        return match.group(0)
+
+    return MATH_RE.sub(_sub, text), blocks
+
+
+def restore_math(rendered_html: str, blocks: list[tuple[bool, str]]) -> str:
+    """Restore extracted math as MathJax-delimited elements (typeset client-side)."""
+    for idx, (display, tex) in enumerate(blocks):
+        token = _MATH_PLACEHOLDER.format(idx)
+        if display:
+            replacement = f'<div class="math math-display">\\[{html.escape(tex)}\\]</div>'
+            rendered_html = rendered_html.replace(f'<p>{token}</p>', replacement)
+        else:
+            replacement = f'<span class="math math-inline">\\({html.escape(tex)}\\)</span>'
+        rendered_html = rendered_html.replace(token, replacement)
+    return rendered_html
+
+
+def _find_local_script(names: list[str], system_paths: list[str]) -> str | None:
+    """Return a file:// URI for the first existing cached or system copy of a script."""
     xdg_data = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
-    candidates = [
-        Path(xdg_data) / 'sushi' / 'mermaid.min.js',
-        Path(__file__).resolve().parent / 'vendor' / 'mermaid.min.js',
-        Path('/usr/share/javascript/mermaid/mermaid.min.js'),
-    ]
+    candidates = [Path(xdg_data) / 'sushi' / name for name in names]
+    candidates += [Path(__file__).resolve().parent / 'vendor' / name for name in names]
+    candidates += [Path(p) for p in system_paths]
     for candidate in candidates:
         if candidate.is_file():
             return candidate.as_uri()
-    return MERMAID_CDN_URL
+    return None
+
+
+def _get_mathjax_script_src() -> str:
+    """Locate a local MathJax tex-svg.js for offline rendering, falling back to jsDelivr CDN."""
+    return _find_local_script(
+        ['mathjax-tex-svg.js'],
+        ['/usr/share/nodejs/mathjax-full/es5/tex-svg.js'],
+    ) or MATHJAX_CDN_URL
+
+
+def _get_mermaid_script_src() -> str:
+    """Locate a local mermaid.min.js for offline rendering, falling back to jsDelivr CDN."""
+    return _find_local_script(
+        ['mermaid.min.js'],
+        ['/usr/share/javascript/mermaid/mermaid.min.js'],
+    ) or MERMAID_CDN_URL
+
+
+def _script_csp_source(src: str) -> str:
+    """CSP script-src entry needed to load `src` (CDN origin or local file:)."""
+    if src.startswith('http'):
+        from urllib.parse import urlparse
+        parsed = urlparse(src)
+        return f' {parsed.scheme}://{parsed.netloc}'
+    # Local copies live outside the document's directory, and 'self'
+    # does not reliably cover file:// pages
+    return ' file:'
 
 
 def render_markdown(filepath: str, dark_mode: bool = True) -> str:
@@ -274,6 +364,7 @@ def render_markdown(filepath: str, dark_mode: bool = True) -> str:
     raw = path.read_text(encoding='utf-8', errors='replace')
     fm_html, body = strip_frontmatter(raw)
     body, mermaid_blocks = extract_mermaid_blocks(body)
+    body, math_blocks = extract_math(body)
 
     md = markdown.Markdown(
         extensions=[
@@ -295,6 +386,8 @@ def render_markdown(filepath: str, dark_mode: bool = True) -> str:
     rendered = GITHUB_ALERT_RE.sub(_replace_alert, rendered)
     if mermaid_blocks:
         rendered = restore_mermaid_blocks(rendered, mermaid_blocks)
+    if math_blocks:
+        rendered = restore_math(rendered, math_blocks)
 
     # Sanitize: strip dangerous HTML tags, attributes, and URL schemes
     rendered = sanitize_html(rendered)
@@ -304,20 +397,13 @@ def render_markdown(filepath: str, dark_mode: bool = True) -> str:
 
     theme_class = 'theme-dark' if dark_mode else 'theme-light'
 
+    script_csp_srcs = set()
+
     mermaid_script = ''
-    mermaid_csp_src = ''
     if mermaid_blocks:
         mermaid_src = _get_mermaid_script_src()
         mermaid_theme = 'dark' if dark_mode else 'default'
-        # If Mermaid is loaded from a CDN, allow that origin in CSP
-        if mermaid_src.startswith('http'):
-            from urllib.parse import urlparse
-            parsed = urlparse(mermaid_src)
-            mermaid_csp_src = f' {parsed.scheme}://{parsed.netloc}'
-        else:
-            # Local copy lives outside the document's directory, and 'self'
-            # does not reliably cover file:// pages
-            mermaid_csp_src = ' file:'
+        script_csp_srcs.add(_script_csp_source(mermaid_src))
         mermaid_script = f"""
 <script src="{mermaid_src}"></script>
 <script>
@@ -331,12 +417,37 @@ if (window.mermaid) {{
 }}
 </script>"""
 
+    math_script = ''
+    if math_blocks:
+        mathjax_src = _get_mathjax_script_src()
+        script_csp_srcs.add(_script_csp_source(mathjax_src))
+        # Only elements emitted by restore_math() are typeset; stray `$` or
+        # `\(` elsewhere in the document is never interpreted as math.
+        math_script = f"""
+<script>
+window.MathJax = {{
+    tex: {{
+        inlineMath: [['\\\\(', '\\\\)']],
+        displayMath: [['\\\\[', '\\\\]']],
+        processEscapes: false
+    }},
+    options: {{
+        ignoreHtmlClass: 'markdown-body',
+        processHtmlClass: 'math'
+    }},
+    svg: {{ fontCache: 'global' }}
+}};
+</script>
+<script src="{mathjax_src}"></script>"""
+
+    script_csp_src = ''.join(sorted(script_csp_srcs))
+
     return f"""<!DOCTYPE html>
 <html class="{theme_class}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'{mermaid_csp_src}; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: http: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'{script_csp_src}; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: http: https:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none';">
 <style>
 :root.theme-dark {{
     --bg: #1e1e1e;
@@ -498,6 +609,11 @@ pre code {{
     border-radius: 8px;
     margin-bottom: 16px;
 }}
+.math-display {{
+    margin-bottom: 16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}}
 .mermaid-container {{
     margin-bottom: 16px;
     padding: 16px;
@@ -563,7 +679,7 @@ details.frontmatter table {{
 <article class="markdown-body">
 {fm_html}
 {rendered}
-</article>{mermaid_script}
+</article>{mermaid_script}{math_script}
 <script>
 window.__sushiScrollTo = function(id) {{
     if (!id) {{

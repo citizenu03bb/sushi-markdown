@@ -18,6 +18,7 @@ However, `mimeHandler.js` appends `~/.local/share/sushi` to GJS's `imports.searc
 
 - **GitHub-flavored Markdown:** Tables, fenced code blocks with Pygments syntax highlighting, task lists (`- [x]`), GitHub alerts (`> [!NOTE]`, `> [!WARNING]`, etc.), and collapsible YAML frontmatter.
 - **Mermaid diagrams:** Fenced ```` ```mermaid ```` blocks are rendered to inline SVGs using a locally cached `mermaid.min.js` (zero overhead when a file has no diagrams, and works offline).
+- **LaTeX math:** Inline `$...$` / `\(...\)`, display `$$...$$` / `\[...\]`, and fenced ```` ```math ```` blocks are typeset with MathJax 3 (SVG output, locally cached `mathjax-tex-svg.js`, loaded only when a file contains math). Math is protected from Markdown processing, so `_` and `*` inside formulas behave; code spans, fences, prices like `$5 and $10`, and escaped `\$` stay literal.
 - **In-preview `.md` link navigation:** Clicking relative links to other `.md` files (including extensionless wiki links like `[Setup](./setup)`, directory links resolving `README.md` / `index.md`, and cross-file `#anchor` links) renders the target Markdown file in-place and updates the window titlebar and **Open With…** button.
 - **Local non-Markdown links:** Clicking a relative link to an image, PDF, or code file hands it off to Sushi's native viewer for that file type. External `http(s)://` and `mailto:` links open in your default browser.
 - **Back / Forward history & Raw toggle:**
@@ -31,7 +32,7 @@ However, `mimeHandler.js` appends `~/.local/share/sushi` to GJS's `imports.searc
 This project takes security seriously. The following protections are built in:
 
 - **HTML Sanitization:** All rendered Markdown HTML is passed through a whitelist-based sanitizer that strips dangerous tags (`<script>`, `<iframe>`, `<object>`, `<svg>`, etc.), event handler attributes (`onclick`, `onerror`, …), and dangerous URL schemes (`javascript:`, `vbscript:`, `data:text/html`). Only a curated set of safe HTML tags and attributes is allowed.
-- **Content Security Policy (CSP):** The generated HTML includes a CSP (`default-src 'none'`) that blocks plugins, frames, form submissions, network requests from scripts and loading scripts from other origins (except the Mermaid CDN when diagrams are present). Inline scripts are still allowed because the viewer relies on them, so the sanitizer remains the primary defense.
+- **Content Security Policy (CSP):** The generated HTML includes a CSP (`default-src 'none'`) that blocks plugins, frames, form submissions, network requests from scripts and loading scripts from other origins (except the Mermaid / MathJax CDN when diagrams or formulas are present and no local copy is cached). Inline scripts are still allowed because the viewer relies on them, so the sanitizer remains the primary defense.
 - **WebKit2 Sandbox:** The viewer enables WebKit2's sandbox mode to isolate the rendering process.
 - **Mermaid `securityLevel: 'strict'`:** Mermaid diagrams are rendered with strict security to prevent XSS via diagram definitions.
 - **File Size Limit:** Files larger than 10 MiB are rejected to prevent denial-of-service via memory exhaustion.
@@ -85,7 +86,8 @@ sushi-markdown/
 ├── install.sh             # Symlinks into ~/.local/share/sushi & restarts Sushi
 ├── uninstall.sh           # Removes symlinks & restarts Sushi
 └── tests/
-    └── run.sh             # Automated Python + GJS test suite
+    ├── run.sh             # Automated Python + GJS test suite
+    └── navigation.js      # GJS test clicking links between .md files (history, anchors, dirs)
 ```
 
 ## Tests
