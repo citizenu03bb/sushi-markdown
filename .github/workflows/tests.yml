@@ -14,7 +14,7 @@ jobs:
     name: HTML rendering
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -39,7 +39,7 @@ jobs:
       # No accessibility bus in the container; silences AT-SPI warnings
       NO_AT_BRIDGE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install dependencies
         run: |
           apt-get update
@@ -47,7 +47,7 @@ jobs:
             gnome-sushi gjs python3 python3-markdown python3-pygments \
             gsettings-desktop-schemas xvfb xauth dbus-x11 ca-certificates curl
       - name: Cache Mermaid and MathJax
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ci-assets
           key: sushi-assets-mermaid11-mathjax3.2.2
