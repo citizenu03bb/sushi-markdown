@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Usage: tests/run.sh [--python-only]
+#   --python-only     run only the HTML rendering checks (no GNOME Sushi needed)
+# Environment:
+#   SUSHI_ASSETS_DIR  where cached mermaid.min.js / mathjax-tex-svg.js live
+#                     (default: ~/.local/share/sushi, as set up by install.sh)
+#   GJS_TIMEOUT       seconds before a hung GJS test is killed (default: 120)
+
 here=$(cd "$(dirname "$0")/.." && pwd)
+python_only=false
+[ "${1:-}" = "--python-only" ] && python_only=true
+assets_dir=${SUSHI_ASSETS_DIR:-$HOME/.local/share/sushi}
+gjs_timeout=${GJS_TIMEOUT:-120}
+sushi_libdir="/usr/lib/$(uname -m)-linux-gnu/sushi"
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -61,27 +73,31 @@ grep -qF '<div class="math math-display">\[a_1 * b_2 * c_3\]</div>' <<<"$html_ou
 grep -qF 'a price of $5 and $10' <<<"$html_out"
 grep -qF '<code>$not_math$</code>' <<<"$html_out"
 grep -q 'window.MathJax' <<<"$html_out"
-if python3 "$here/render_markdown.py" "$here/README.md" dark | grep -q 'MathJax'; then
+if python3 "$here/render_markdown.py" "$here/README.md" dark | grep -q 'window.MathJax'; then
     echo "MathJax must not be loaded for documents without math" >&2
     exit 1
 fi
 echo "   OK: LaTeX inline/display/fenced math extracted; prices and code spans left untouched."
+
+if $python_only; then
+    echo "Python tests passed (GJS tests skipped)."
+    exit 0
+fi
 
 echo "2. Testing GJS Sushi MimeHandler & MarkdownRenderer..."
 export XDG_DATA_HOME="$tmpdir/xdg_data"
 mkdir -p "$XDG_DATA_HOME/sushi/viewers"
 ln -s "$here/render_markdown.py" "$XDG_DATA_HOME/sushi/render_markdown.py"
 ln -s "$here/viewers/markdown.js" "$XDG_DATA_HOME/sushi/viewers/markdown.js"
-if [ -f "$HOME/.local/share/sushi/mermaid.min.js" ]; then
-    ln -s "$HOME/.local/share/sushi/mermaid.min.js" "$XDG_DATA_HOME/sushi/mermaid.min.js"
-fi
-if [ -f "$HOME/.local/share/sushi/mathjax-tex-svg.js" ]; then
-    ln -s "$HOME/.local/share/sushi/mathjax-tex-svg.js" "$XDG_DATA_HOME/sushi/mathjax-tex-svg.js"
-fi
+for asset in mermaid.min.js mathjax-tex-svg.js; do
+    if [ -f "$assets_dir/$asset" ]; then
+        ln -s "$assets_dir/$asset" "$XDG_DATA_HOME/sushi/$asset"
+    fi
+done
 
-GI_TYPELIB_PATH=/usr/lib/x86_64-linux-gnu/sushi/girepository-1.0 \
-LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/sushi \
-gjs -c "
+GI_TYPELIB_PATH="$sushi_libdir/girepository-1.0" \
+LD_LIBRARY_PATH="$sushi_libdir" \
+timeout "$gjs_timeout" gjs -c "
 const {Gio, GLib} = imports.gi;
 const res = Gio.Resource.load('/usr/share/sushi/org.gnome.NautilusPreviewer.src.gresource');
 res._register();
@@ -187,8 +203,8 @@ cat > "$nav/sub/c.md" <<'EOF'
 - [Up](../a.md)
 EOF
 
-GI_TYPELIB_PATH=/usr/lib/x86_64-linux-gnu/sushi/girepository-1.0 \
-LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/sushi \
-gjs "$here/tests/navigation.js" "$nav"
+GI_TYPELIB_PATH="$sushi_libdir/girepository-1.0" \
+LD_LIBRARY_PATH="$sushi_libdir" \
+timeout "$gjs_timeout" gjs "$here/tests/navigation.js" "$nav"
 
 echo "All tests passed."

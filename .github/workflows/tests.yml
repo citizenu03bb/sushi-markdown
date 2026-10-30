@@ -1,0 +1,63 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: HTML rendering
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-markdown python3-pygments
+      - name: Run rendering tests
+        run: tests/run.sh --python-only
+
+  sushi:
+    name: GNOME Sushi viewer
+    runs-on: ubuntu-24.04
+    # Match the Sushi 50 / WebKitGTK stack the viewer targets
+    container:
+      image: ubuntu:26.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      SUSHI_ASSETS_DIR: ${{ github.workspace }}/.ci-assets
+      # No GPU on runners: force software rendering
+      WEBKIT_DISABLE_COMPOSITING_MODE: '1'
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      # bubblewrap cannot create namespaces in an unprivileged container
+      WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
+      # No accessibility bus in the container; silences AT-SPI warnings
+      NO_AT_BRIDGE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            gnome-sushi gjs python3 python3-markdown python3-pygments \
+            gsettings-desktop-schemas xvfb xauth dbus-x11 ca-certificates curl
+      - name: Cache Mermaid and MathJax
+        uses: actions/cache@v4
+        with:
+          path: .ci-assets
+          key: sushi-assets-mermaid11-mathjax3.2.2
+      - name: Download Mermaid and MathJax
+        run: |
+          mkdir -p "$SUSHI_ASSETS_DIR"
+          cd "$SUSHI_ASSETS_DIR"
+          [ -f mermaid.min.js ] || curl -fsSL -o mermaid.min.js \
+            https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js
+          [ -f mathjax-tex-svg.js ] || curl -fsSL -o mathjax-tex-svg.js \
+            https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js
+      - name: Run full test suite
+        run: xvfb-run -a dbus-run-session -- tests/run.sh
