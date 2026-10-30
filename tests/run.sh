@@ -207,4 +207,24 @@ GI_TYPELIB_PATH="$sushi_libdir/girepository-1.0" \
 LD_LIBRARY_PATH="$sushi_libdir" \
 timeout "$gjs_timeout" gjs "$here/tests/navigation.js" "$nav"
 
+echo "4. Testing that Sushi's bottom toolbar does not swallow page clicks..."
+cat > "$tmpdir/toolbar.md" <<EOF
+# Toolbar
+
+$filler
+
+<details>
+<summary>Show script</summary>
+
+Hidden body.
+
+</details>
+
+$filler
+EOF
+
+GI_TYPELIB_PATH="$sushi_libdir/girepository-1.0" \
+LD_LIBRARY_PATH="$sushi_libdir" \
+timeout "$gjs_timeout" gjs "$here/tests/toolbar.js" "$tmpdir/toolbar.md"
+
 echo "All tests passed."

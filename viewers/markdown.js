@@ -612,10 +612,31 @@ var Klass = _isAvailable() ? GObject.registerClass({
         // toolbar.show_all().
         GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             if (this._toolbar) {
+                this._fixToolbarInputArea(this._toolbar);
                 this._toolbar.show_all();
                 this._toolbar.resetTimeout();
             }
             return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _fixToolbarInputArea(toolbar) {
+        // Sushi's RendererToolbar is an hexpand Gtk.Revealer with only its
+        // inner box centered, so the revealer's input window spans the whole
+        // preview width just above the bottom margin. It swallows clicks on
+        // page content scrolled into that band (e.g. a <summary> that will not
+        // expand), and keeps doing so after crossfading out. Shrink it to the
+        // buttons, and hide it entirely once it has faded out.
+        toolbar.hexpand = false;
+        toolbar.halign = Gtk.Align.CENTER;
+
+        toolbar.connect('notify::reveal-child', () => {
+            if (toolbar.reveal_child)
+                toolbar.show();
+        });
+        toolbar.connect('notify::child-revealed', () => {
+            if (!toolbar.reveal_child && !toolbar.child_revealed)
+                toolbar.hide();
         });
     }
 
